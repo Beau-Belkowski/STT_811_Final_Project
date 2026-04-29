@@ -1,0 +1,188 @@
+---
+title: "STT 811 Project"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#loading in the cleaned dataset from Python
+grocery <- read.csv("grocery_inventory_clean.csv")
+```
+
+```{r, results='hide'}
+library(tidyverse)
+library(ggplot2)
+library(ggiraph)
+library(caret)
+library(xgboost)
+library(randomForest)
+library(nnet)
+library(dplyr)
+```
+
+This analysis in R is focused on the start of feature engineering where the true meaning behind ABC Class was discovered and finding what variables held more importance over others. 
+```{r}
+#preparing testing on the different groupings of numerical features in the dataset with the stock status, planning & velocity, and financial & quality
+grocery$FIFO_FEFO <- as.factor(grocery$FIFO_FEFO)
+grocery$Inventory_Status <- as.factor(grocery$Inventory_Status)
+grocery$ABC_Class <- as.factor(grocery$ABC_Class)
+stock_variables <- c("Quantity_On_Hand", "Quantity_Reserved", "Quantity_Committed", "Damaged_Qty", "Returns_Qty", "Inventory_Status", "FIFO_FEFO",
+"Stock_Age_Days")
+planning_variables <- c("Avg_Daily_Sales", "Forecast_Next_30d", "Days_of_Inventory", "Reorder_Point", "Safety_Stock", "Lead_Time_Days", "SKU_Churn_Rate", "Order_Frequency_per_month")
+financial_variables <- c("Unit_Cost_USD", "Last_Purchase_Price_USD", "Total_Inventory_Value_USD", "Supplier_OnTime_Pct", "Demand_Forecast_Accuracy_Pct", "Audit_Variance_Pct", "Count_Variance")
+grocery_stock_status <- grocery[c(stock_variables, 'ABC_Class')]
+grocery_planning_velocity <- grocery[c(planning_variables, 'ABC_Class')]
+grocery_financial_quality <- grocery[c(financial_variables, 'ABC_Class')]
+```
+
+```{r}
+#80/20 split for all testing across all 4 models to be ran on all the features, and the individual feature groupings
+split_pct <- 0.8
+n <- length(grocery$ABC_Class)*split_pct
+row_samp <- sample(1:length(grocery$ABC_Class), n, replace = FALSE)
+train <- grocery[row_samp,]
+test <- grocery[-row_samp,]
+train_stock_status <- grocery_stock_status[row_samp,]
+test_stock_status <- grocery_stock_status[-row_samp,]
+train_planning_velocity <- grocery_planning_velocity[row_samp,]
+test_planning_velocity <- grocery_planning_velocity[-row_samp,]
+train_financial_quality <- grocery_financial_quality[row_samp,]
+test_financial_quality <- grocery_financial_quality[-row_samp,]
+```
+
+
+All the models done in R were random forest as it best handled the data from the Python models and allowed for the bar plots for the feature importance
+```{r}
+#random forest on the stock status features with feature importance barplot
+grocery_stock_rf <- randomForest(ABC_Class ~ . - ABC_Class, 
+                      data = train_stock_status, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_stock <- predict(grocery_stock_rf, test_stock_status)
+confusionMatrix(rf_predict_stock, as.factor(test_stock_status$ABC_Class))
+barplot(grocery_stock_rf$importance[,3])
+```
+The Random Forest feature importance shows that majority of its value comes from those three main Quantity features of On Hand, Reserved, and Committed. Also shows Inventory Status was somewhat important but it was not used in the final modeling as it was a non-numeric feature, but interesting to note it had some importance. Also 50-60% accuracy is not very good which shows stock status is not all that is needed to predict ABC Class.
+
+```{r}
+#random forest on the planning & velocity features with feature importance barplot
+grocery_planning_rf <- randomForest(ABC_Class ~ . - ABC_Class, 
+                      data = train_planning_velocity, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_planning <- predict(grocery_planning_rf,  test_planning_velocity)
+confusionMatrix(rf_predict_planning, as.factor(test_planning_velocity$ABC_Class))
+barplot(grocery_planning_rf$importance[,3])
+```
+The Random Forest feature importance shows that majority of its value comes from Average Daily Sales, Days of Inventory, SKU Churn Rate, and Order Frequency per Month. These features were more dominant than the others which can be shown through further analysis on the full model tester as they were in the top half for importance. Also 50-60% accuracy is not very good which shows planning & velocity is not all that is needed to predict ABC Class.
+
+
+```{r}
+#random forest on the financial & quality features with feature importance barplot
+grocery_financial_rf <- randomForest(ABC_Class ~ . - ABC_Class,
+                      data = train_financial_quality, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_financial <- predict(grocery_financial_rf, test_financial_quality)
+confusionMatrix(rf_predict_financial, as.factor(test_financial_quality$ABC_Class))
+barplot(grocery_financial_rf$importance[,3])
+```
+The Random Forest feature importance shows that majority of its value comes from Total Inventory Value, Unit Cost, and Last Purchase Price. Total Inventory Value dominated all features by a lot to the point the other four features not mentioned were basically nonexistent. Also 90-95% accuracy is very good which shows financials & quality is needed to predict ABC Class. However, with such dominance by Total Inventory Value, it was removed to see if there was other features being underrepresented because of its dominance.
+
+```{r}
+#random forest on the financial & quality features minus Total Inventory Value with feature importance barplot
+grocery_financial_rf <- randomForest(ABC_Class ~ . - ABC_Class - Total_Inventory_Value_USD,
+                      data = train_financial_quality, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_financial <- predict(grocery_financial_rf, test_financial_quality)
+confusionMatrix(rf_predict_financial, as.factor(test_financial_quality$ABC_Class))
+barplot(grocery_financial_rf$importance[,3])
+```
+The Random Forest feature importance shows that majority of its value comes from Unit Cost and Last Purchase Price. These features were more dominant than the others which can be shown by the other four features not mentioned were basically nonexistent again. Also 50-60% accuracy is not very good which lead to thinking that Total Inventory Value is a key feature in predicting ABC Class. Because of this a random forest model was ran just with Total Inventory Value to see if it will have an accuracy close to the model that it was included in.
+
+```{r}
+#random forest on the most important planning & velocity feature which is Total Inventory Value
+grocery_financial_rf <- randomForest(ABC_Class ~ Total_Inventory_Value_USD,
+                      data = train_financial_quality, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_financial <- predict(grocery_financial_rf, test_financial_quality)
+confusionMatrix(rf_predict_financial, as.factor(test_financial_quality$ABC_Class))
+```
+
+```{r}
+#additional model testing on Total Inventory Value
+model_logit <- multinom(
+  ABC_Class ~ Total_Inventory_Value_USD,
+  data = train)
+
+pred_logit <- predict(model_logit, test)
+mean(pred_logit == test$ABC_Class)
+```
+The Random Forest model shows Total Inventory Value has a perfect accuracy of 100% with never missing a prediction which brought the idea that ABC Class is the categorical grouping of Total Inventory Value. Also a multinomial logistic regression model was used to test this theory out just to see if it was not an issue with the random forest model. This model did confirm the suspicion of Total Inventory Value mapping to ABC Class. From this more model testing was done to see what factors are drivers for Total Inventory Value. Also since this feature was found to be the sole predictor for ABC Class, it was removed from the final model testing.
+
+```{r}
+#random forest on the features that could make up Total Inventory Value
+grocery_tester_rf <- randomForest(ABC_Class ~ Unit_Cost_USD + Quantity_On_Hand + Avg_Daily_Sales,
+                      data = train, mtry = 2, 
+                      importance = TRUE, ntree = 1000, maxnodes = 4)
+rf_predict_tester <- predict(grocery_tester_rf, test)
+confusionMatrix(rf_predict_tester, as.factor(test$ABC_Class))
+barplot(grocery_tester_rf$importance[,3])
+```
+This Random Forest model's goal was to try and find which of the important features above were used to calculate Total Inventory Value as it is a direct 1 to 1 correspondence for ABC Class. From this it is said Unit Cost is the most important followed by Quantity on Hand then Average Daily Sales.
+
+```{r}
+ggplot(grocery, aes(x = ABC_Class, y = Total_Inventory_Value_USD, fill = ABC_Class)) +
+  geom_boxplot() +
+  labs(title = "ABC Class vs Total Inventory Value USD",
+       x = "ABC Class",
+       y = "Total Inventory Value USD") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(grocery, aes(x = Total_Inventory_Value_USD, y = ABC_Class, color = ABC_Class)) +
+  geom_jitter(alpha = 0.5) +
+    labs(title = "Total Inventory Value USD vs ABC Class",
+       y = "ABC Class",
+       x = "Total Inventory Value USD") +
+  theme_minimal()
+```
+Both of the plots above are just different ways of showing the split between class A, B, and C using Total Inventory Value to verify if this hypothesis being made about the relationship between Total Inventory Value and ABC Class is true. For both plots, it is slightly hard to tell exactly where the cut off is, a quick group_by statement was ran to find the minimums and maximums of the classes to confirma the cut off points exactly.
+
+```{r}
+grocery %>%
+  group_by(ABC_Class) %>%
+  summarise(
+    'Lowest Value' = min(Total_Inventory_Value_USD, na.rm = TRUE),
+    'Highest Value' = max(Total_Inventory_Value_USD, na.rm = TRUE))
+```
+This summary table provided the confirmation of the splits between the three classes where Total Inventory Value is perfected mapped to ABC Class. Now we go back to the next goal on hand which was trying to find what features in the data account for Total Inventory Value. Since Total Inventory Value was a numerical value, it was believed it can be calculated through the data provided.
+
+```{r}
+abc_class_solver <- grocery[c('Quantity_On_Hand', 'Quantity_Reserved', 'Quantity_Committed', 'Unit_Cost_USD', 'Last_Purchase_Price_USD', 'Avg_Daily_Sales', 'ABC_Class', 'Total_Inventory_Value_USD')]
+abc_class_solver['verification1'] <- abc_class_solver['Quantity_On_Hand'] * abc_class_solver['Unit_Cost_USD']
+abc_class_solver['verification2'] <- abc_class_solver['Quantity_On_Hand'] * abc_class_solver['Last_Purchase_Price_USD']
+abc_class_solver['verification3'] <- abc_class_solver['Avg_Daily_Sales'] * abc_class_solver['Unit_Cost_USD']
+head(abc_class_solver)
+```
+Three possible "verifications" were tested to see if they could calculate to Total Inventory Value. From the results provided above it can be seen that verification 1 almost perfectly matched Total Inventory Value where verification 1 was Unit Cost x Quantity on Hand. The numbers are not a 100% perfect match due to what is most likely assumed to be rounding errors. Verification 2 was the next closest as the only change was Last Purchase Price instead of the current purchase price which was the feature Unit Cost. Then the assumed data definition of ABC Class (which is Total Inventory Value) was unit cost x sales velocity which is represented by Unit Cost x Average Daily Sales (verification 3). Upon glance at the results in the table it was by far the most off every single time not near Total Inventory Value which lead to the idea that ABC Class = Total Inventory Value = Unit Cost x Quantity on Hand.
+
+```{r}
+abc_class_solver$percent_error <- round(abs(abc_class_solver$verification1 - abc_class_solver$Total_Inventory_Value_USD) / abc_class_solver$Total_Inventory_Value_USD * 100, 5)
+head(abc_class_solver)
+```
+Since verification 1 (Unit Cost x Quantity on Hand) looked to be the best match to Total Inventory Value, the percent error was calculated just to see how much it is off by for curiosity purposes. This then lead to the discovery that some products in the store have a Quantity on Hand of 0 or 1 (there was 30 total) which created the idea that Unit Cost x Quantity on Hand does not actually represent Total Inventory Value. This theory was debunked by 970/970 of the rows that were not quantity of 0 or 1 having a percent error of all basically 0%. Then this relationship of ABC Class = Total Inventory Value = Unit Cost x Quantity on Hand was then plotted to further confirm this theory.
+
+```{r}
+ggplot(abc_class_solver, aes(x = Total_Inventory_Value_USD, y = verification1, color = ABC_Class)) +
+  geom_jitter(alpha = 0.5) +
+    labs(title = "Total Inventory Value USD vs ABC Class Predicted Value",
+       y = "Unit Cost * Quantity on Hand",
+       x = "Total Inventory Value USD") +
+  theme_minimal()
+```
+From the plot, it can be seen that Unit Cost x Quantity on Hand is near perfect linear relationship representing Total Inventory Value. As this idea was officially confirmed, Unit Cost and Quantity on Hand were made sure to be included in the final model testing. They were not removed as we wanted to see if the machine learning models can pick up on the relationship between the two features along with the other features chosen to be included.
